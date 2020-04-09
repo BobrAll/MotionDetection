@@ -5,25 +5,31 @@ using namespace std;
 using namespace cv;
 
 VideoCapture cap(1);
-Mat cam_img;
+Mat cam_img, mask_img, filled_mask_img;
 Mat templ_img(480, 640, CV_8UC3, Scalar(0, 0, 0));
+Mat prev_templ_img(480, 640, CV_8UC3, Scalar(0, 0, 0));
 bool mode = 0;
 unsigned short fps = 60;
 
 void open_settings();
 void copy_img(Mat &img1, Mat &img2);
 void do_detection();
-
+void do_filled_mask();
+void work_with_contours();
 int main()
 {
 	if (cap.isOpened())
-	{
 		while (true)
 		{
 			cap.read(cam_img);
-			imshow("t", templ_img);
 			do_detection();
+			do_filled_mask();
+			work_with_contours();
+
 			imshow("Cam", cam_img);
+			imshow("Mask", mask_img);
+			imshow("Filled mask", filled_mask_img);
+
 			char c = waitKey(round(1000/fps));
 			if (c == 's')
 			{
@@ -33,10 +39,10 @@ int main()
 			if (c > 0)
 				break;
 		}
-	}
 	else
 	{
-		cout << "Cam is not connected";
+		cout << "Cam is not connected\n";
+		system("pause");
 	}
 }
 void open_settings()
@@ -82,23 +88,80 @@ void do_detection()
 {
 	if (mode == 0)
 	{
+		unsigned short gap = 30;
 		Mat current_img(cam_img.rows, cam_img.cols, CV_8UC3);
+		Mat local_mask_img(cam_img.rows, cam_img.cols, CV_8UC3, Scalar(0, 0, 0));
 		copy_img(cam_img, current_img);
-		int gap = 25;
+		
 		for (size_t i = 0; i < templ_img.rows; i++)
 		{
 			for (size_t j = 0; j < templ_img.cols; j++)
 			{
 				if (abs(cam_img.at<Vec3b>(i, j)[0] - templ_img.at<Vec3b>(i, j)[0]) > gap ||
 					abs(cam_img.at<Vec3b>(i, j)[1] - templ_img.at<Vec3b>(i, j)[1]) > gap ||
-					abs(cam_img.at<Vec3b>(i, j)[2] - templ_img.at<Vec3b>(i, j)[2]) > gap)
+					abs(cam_img.at<Vec3b>(i, j)[2] - templ_img.at<Vec3b>(i, j)[2]) > gap ||
+					abs(cam_img.at<Vec3b>(i, j)[0] - prev_templ_img.at<Vec3b>(i, j)[0]) > gap ||
+					abs(cam_img.at<Vec3b>(i, j)[1] - prev_templ_img.at<Vec3b>(i, j)[1]) > gap ||
+					abs(cam_img.at<Vec3b>(i, j)[2] - prev_templ_img.at<Vec3b>(i, j)[2]) > gap)
 				{
-					cam_img.at<Vec3b>(i, j)[0] = 0;
-					cam_img.at<Vec3b>(i, j)[1] = 200;
-					cam_img.at<Vec3b>(i, j)[2] = 0;
+					local_mask_img.at<Vec3b>(i, j)[0] = 0;
+					local_mask_img.at<Vec3b>(i, j)[1] = 200;
+					local_mask_img.at<Vec3b>(i, j)[2] = 0;
 				}
 			}
 		}
+		copy_img(templ_img, prev_templ_img);
 		copy_img(current_img, templ_img);
+		mask_img = local_mask_img;
 	}
+}
+void do_filled_mask()
+{
+	Mat local_filled_mask_img(mask_img.rows, mask_img.cols, CV_8UC3, Scalar(0, 0, 0));
+	//отсеивание шумов
+	for (size_t i = 2; i < mask_img.rows - 2; i++)
+	{
+		for (size_t j = 2; j < mask_img.cols - 2; j++)
+		{
+			if (mask_img.at<Vec3b>(i, j - 2)[1] != 200 && mask_img.at<Vec3b>(i, j + 2)[1] != 200)
+				mask_img.at<Vec3b>(i, j)[1] = 0;
+			if (mask_img.at<Vec3b>(i - 2, j)[1] != 200 && mask_img.at<Vec3b>(i + 2, j)[1] != 200)
+				mask_img.at<Vec3b>(i, j)[1] = 0;
+		}
+	}
+	//заливка маски
+	for (size_t i = 0; i < mask_img.rows; i++)
+	{
+		vector<size_t> pos;
+		for (size_t j = 0; j < mask_img.cols; j++)
+		{
+			if (mask_img.at<Vec3b>(i, j)[1] == 200)
+				pos.push_back(j);
+		}
+		if(pos.size() > 0)
+			for (size_t k = *min_element(pos.begin(), pos.end()); k < *max_element(pos.begin(), pos.end()); k++)
+			{
+				local_filled_mask_img.at<Vec3b>(i, k)[1] = 200;
+			}
+	}
+	//отсеивание шумов
+	for (size_t i = 2; i < local_filled_mask_img.rows - 2; i++)
+	{
+		for (size_t j = 2; j < local_filled_mask_img.cols - 2; j++)
+		{
+			if (local_filled_mask_img.at<Vec3b>(i, j - 2)[1] != 200 && local_filled_mask_img.at<Vec3b>(i, j + 2)[1] != 200)
+				local_filled_mask_img.at<Vec3b>(i, j)[1] = 0;
+			if (local_filled_mask_img.at<Vec3b>(i - 2, j)[1] != 200 && local_filled_mask_img.at<Vec3b>(i + 2, j)[1] != 200)
+				local_filled_mask_img.at<Vec3b>(i, j)[1] = 0;
+		}
+	}
+	filled_mask_img = local_filled_mask_img;
+}
+void work_with_contours()
+{
+	vector<vector<Point>> contours;
+	Mat canny_img(filled_mask_img.rows, filled_mask_img.cols, CV_8UC1);
+	Canny(filled_mask_img, canny_img, 100, 200);
+	findContours(canny_img, contours, 1, 2);
+		drawContours(cam_img, contours, -1, Scalar(0, 0, 200), 5);
 }
